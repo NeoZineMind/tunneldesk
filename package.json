@@ -1,0 +1,53 @@
+{
+  "name": "tunneldesk",
+  "version": "0.1.20",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:linux": "tauri build --bundles deb,rpm,appimage",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "@tauri-apps/api": "^2.6.0",
+    "@tauri-apps/plugin-dialog": "^2.3.0",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
+    "@vueuse/core": "^14.3.0",
+    "ant-design-vue": "^4.2.6",
+    "pinia": "^2.3.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.1",
+    "@tauri-apps/cli": "^2.6.0",
+    "@types/node": "^26.0.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.11",
+    "eslint": "^10.5.0",
+    "eslint-plugin-vue": "^10.9.2",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.8.4",
+    "tailwindcss": "^4.3.1",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.62.0",
+    "unplugin-auto-import": "^21.0.0",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^6.0.7",
+    "vitest": "^4.1.9",
+    "vue-tsc": "^2.2.0"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TunnelDesk",
+  "version": "0.1.20",
+  "identifier": "com.tunneldesk.app",
+  "mainBinaryName": "tunneldesk",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build && node scripts/build-linux-helper.mjs",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "TunnelDesk",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 500,
+        "resizable": true,
+        "center": true,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/tunneldesk/tunneldesk-hosts-helper": "target/release/tunneldesk-hosts-helper",
+          "/usr/share/polkit-1/actions/com.tunneldesk.hosts.policy": "linux/com.tunneldesk.hosts.policy"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/lib/tunneldesk/tunneldesk-hosts-helper": "target/release/tunneldesk-hosts-helper",
+          "/usr/share/polkit-1/actions/com.tunneldesk.hosts.policy": "linux/com.tunneldesk.hosts.policy"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4NkM2NTIyMUIwOENDRTIKUldUaXpBZ2JJbVZzR0VSM1VvbWFLb0h0S0NmTFNKUHpwR2w0SnhWUGZkM21heSswcE9TbkJGeFgK",
+      "endpoints": ["https://github.com/NeoZineMind/tunneldesk/releases/latest/download/latest.json"]
+    }
+  }
+}

@@ -1,0 +1,42 @@
+[package]
+name = "tunneldesk"
+version = "0.1.20"
+description = "A desktop SSH tunnel manager for development services"
+authors = ["TunnelDesk contributors"]
+license = "MIT"
+repository = "https://github.com/NeoZineMind/tunneldesk"
+edition = "2021"
+default-run = "tunneldesk"
+
+[lib]
+name = "tunneldesk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
+russh = { version = "0.60.3", default-features = false, features = ["flate2", "ring", "rsa"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ssh-key = { package = "internal-russh-forked-ssh-key", version = "0.6.18" }
+tauri-plugin-dialog = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[target.'cfg(not(all(target_os = "linux", target_arch = "x86")))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+
+[dev-dependencies]
+tempfile = "3"
