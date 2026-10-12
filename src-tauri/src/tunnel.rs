@@ -9,18 +9,20 @@ use std::time::Duration;
 use russh::client;
 use ssh_key::PublicKey;
 use tokio::io::copy_bidirectional;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{sleep, timeout, Instant};
 use tracing::{error, info, warn};
 
 use crate::error::{AppError, AppResult};
+use crate::listener_diagnostics::BoundListeners;
 use crate::model::{
-    AuthMethod, ServiceConfig, ServiceState, ServiceStatus, SshSettings, TunnelConfig,
+    AuthMethod, ServiceConfig, ServiceState, ServiceStatus, SshSettings, StartupIssue,
+    StartupIssueKind, TunnelConfig,
 };
 
-type SharedServiceStatuses = Arc<RwLock<HashMap<String, ServiceStatus>>>;
+pub(crate) type SharedServiceStatuses = Arc<RwLock<HashMap<String, ServiceStatus>>>;
 
 const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const FORWARDING_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,18 +41,49 @@ impl client::Handler for ClientHandler {
 }
 
 pub struct TunnelRuntime {
-    tunnel_id: String,
-    stop_tx: broadcast::Sender<()>,
-    listener_tasks: Vec<JoinHandle<()>>,
+    stop_txs: Vec<broadcast::Sender<()>>,
+    listener_tasks: HashMap<String, JoinHandle<()>>,
+    services: Vec<ServiceConfig>,
+    owns_ssh: bool,
     ssh: Arc<SshSessionManager>,
     service_statuses: SharedServiceStatuses,
 }
 
 impl TunnelRuntime {
-    pub fn tunnel_id(&self) -> &str {
-        &self.tunnel_id
+    pub fn services(&self) -> &[ServiceConfig] {
+        &self.services
     }
 
+    pub async fn retain_services(&mut self, allowed: &std::collections::HashSet<String>) {
+        let removed = self
+            .services
+            .iter()
+            .filter(|service| !allowed.contains(&service.id))
+            .map(|service| service.id.clone())
+            .collect::<Vec<_>>();
+        for id in removed {
+            if let Some(task) = self.listener_tasks.remove(&id) {
+                task.abort();
+                let _ = task.await;
+            }
+            self.service_statuses
+                .write()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&id);
+        }
+        self.services
+            .retain(|service| allowed.contains(&service.id));
+    }
+
+    pub fn absorb(&mut self, other: Self) {
+        self.listener_tasks.extend(other.listener_tasks);
+        self.services.extend(other.services);
+        self.stop_txs.extend(other.stop_txs);
+    }
+
+    pub fn resources(&self) -> (Arc<SshSessionManager>, SharedServiceStatuses) {
+        (Arc::clone(&self.ssh), Arc::clone(&self.service_statuses))
+    }
     pub fn service_statuses(&self) -> Vec<ServiceStatus> {
         let guard = match self.service_statuses.read() {
             Ok(guard) => guard,
@@ -60,17 +93,22 @@ impl TunnelRuntime {
     }
 
     pub async fn stop(self) {
-        let _ = self.stop_tx.send(());
-        for task in self.listener_tasks {
-            task.abort();
+        for sender in self.stop_txs {
+            let _ = sender.send(());
         }
-        self.ssh.stop().await;
+        for (_, task) in self.listener_tasks {
+            task.abort();
+            let _ = task.await;
+        }
+        if self.owns_ssh {
+            self.ssh.stop().await;
+        }
     }
 }
 
 type SshHandle = Arc<client::Handle<ClientHandler>>;
 
-struct SshSessionManager {
+pub(crate) struct SshSessionManager {
     settings: SshSettings,
     password: Option<String>,
     current: Mutex<Option<SshHandle>>,
@@ -228,28 +266,32 @@ pub async fn test_ssh(settings: &SshSettings, password: Option<String>) -> AppRe
 
 pub async fn start(
     tunnel: TunnelConfig,
-    services: Vec<ServiceConfig>,
+    mut listeners: BoundListeners,
     password: Option<String>,
-) -> AppResult<TunnelRuntime> {
-    let enabled_services = services
-        .into_iter()
-        .filter(|service| service.enabled)
+    existing: Option<(Arc<SshSessionManager>, SharedServiceStatuses)>,
+) -> AppResult<(TunnelRuntime, Vec<StartupIssue>)> {
+    let enabled_services = listeners
+        .iter()
+        .map(|(service, _)| service.clone())
         .collect::<Vec<_>>();
-    if enabled_services.is_empty() {
-        return Err(AppError::Message(String::from(
-            "No enabled services in profile",
-        )));
-    }
-
-    let mut listeners = Vec::new();
-    for service in &enabled_services {
-        let listener = bind_local_listener(service).await?;
-        listeners.push((service.clone(), listener));
-    }
-
-    let ssh_manager = Arc::new(SshSessionManager::new(tunnel.ssh.clone(), password).await?);
+    let owns_ssh = existing.is_none();
+    let (ssh_manager, service_statuses) = match existing {
+        Some(resources) => resources,
+        None => (
+            Arc::new(SshSessionManager::new(tunnel.ssh.clone(), password).await?),
+            initial_service_statuses(&enabled_services),
+        ),
+    };
     let tunnel_id = tunnel.id.clone();
-    let service_statuses = initial_service_statuses(&enabled_services);
+    service_statuses
+        .write()
+        .unwrap_or_else(|error| error.into_inner())
+        .extend(
+            initial_service_statuses(&enabled_services)
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone(),
+        );
     preflight_services(
         &tunnel_id,
         &enabled_services,
@@ -257,8 +299,31 @@ pub async fn start(
         Arc::clone(&service_statuses),
     )
     .await;
+    let issues = {
+        let statuses = service_statuses
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        enabled_services
+            .iter()
+            .filter_map(|service| {
+                let status = statuses.get(&service.id)?;
+                (!matches!(status.state, ServiceState::Healthy)).then(|| {
+                    StartupIssue::for_service(
+                        service,
+                        StartupIssueKind::ForwardingError,
+                        status.message.clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    listeners.retain(|(service, _)| !issues.iter().any(|issue| issue.service_id == service.id));
+    let services = listeners
+        .iter()
+        .map(|(service, _)| service.clone())
+        .collect();
     let (stop_tx, _) = broadcast::channel(1);
-    let mut listener_tasks = Vec::new();
+    let mut listener_tasks = HashMap::new();
 
     for (service, listener) in listeners {
         let ssh = Arc::clone(&ssh_manager);
@@ -266,6 +331,7 @@ pub async fn start(
         let tunnel_id = tunnel_id.clone();
         let mut stop_rx = stop_tx.subscribe();
 
+        let service_id = service.id.clone();
         let task = tokio::spawn(async move {
             let service_name = service.name.clone();
             info!(
@@ -319,16 +385,20 @@ pub async fn start(
                 }
             }
         });
-        listener_tasks.push(task);
+        listener_tasks.insert(service_id, task);
     }
 
-    Ok(TunnelRuntime {
-        tunnel_id,
-        stop_tx,
-        listener_tasks,
-        ssh: ssh_manager,
-        service_statuses,
-    })
+    Ok((
+        TunnelRuntime {
+            stop_txs: vec![stop_tx],
+            listener_tasks,
+            services,
+            owns_ssh,
+            ssh: ssh_manager,
+            service_statuses,
+        },
+        issues,
+    ))
 }
 
 fn initial_service_statuses(services: &[ServiceConfig]) -> SharedServiceStatuses {
@@ -453,22 +523,7 @@ where
     }
 }
 
-async fn bind_local_listener(service: &ServiceConfig) -> AppResult<TcpListener> {
-    let socket_addr = service_socket_addr(service)?;
-    TcpListener::bind(socket_addr).await.map_err(|error| {
-        error!(
-            service_id = %service.id,
-            service_name = %service.name,
-            listener = %socket_addr,
-            raw_os_error = ?error.raw_os_error(),
-            error = %error,
-            "Failed to bind local listener"
-        );
-        listener_bind_error(service, &socket_addr.to_string(), error)
-    })
-}
-
-fn service_socket_addr(service: &ServiceConfig) -> AppResult<SocketAddr> {
+pub(crate) fn service_socket_addr(service: &ServiceConfig) -> AppResult<SocketAddr> {
     let local_ip = service.local_ip.parse::<IpAddr>().map_err(|_| {
         AppError::Message(format!(
             "Local IP must be a valid loopback address for {}: {}",
@@ -478,7 +533,11 @@ fn service_socket_addr(service: &ServiceConfig) -> AppResult<SocketAddr> {
     Ok(SocketAddr::new(local_ip, service.port))
 }
 
-fn listener_bind_error(service: &ServiceConfig, address: &str, error: io::Error) -> AppError {
+pub(crate) fn listener_bind_error(
+    service: &ServiceConfig,
+    address: &str,
+    error: io::Error,
+) -> AppError {
     let prefix = format!(
         "Cannot start local listener for service \"{}\" on {address}: {error}",
         service.name
@@ -491,7 +550,8 @@ fn listener_bind_error(service: &ServiceConfig, address: &str, error: io::Error)
         ErrorKind::AddrNotAvailable => format!(
             "{prefix}. The local IP is not available on this machine. Use a loopback address such as 127.77.0.10."
         ),
-        ErrorKind::PermissionDenied => format!("{prefix}. {}", listener_permission_hint(service.port)),
+        ErrorKind::PermissionDenied if cfg!(target_os = "windows") || is_windows_socket_permission_error(&error) => format!("{prefix}. {}", listener_permission_hint(service.port)),
+        ErrorKind::PermissionDenied => format!("{prefix}. Permission to bind this local TCP listener was denied. Check port permissions and security policy."),
         _ if is_windows_socket_permission_error(&error) => {
             format!("{prefix}. {}", listener_permission_hint(service.port))
         }
@@ -687,6 +747,160 @@ fn reconnect_delay(attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct EchoServer;
+    impl russh::server::Handler for EchoServer {
+        type Error = russh::Error;
+        async fn auth_password(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<russh::server::Auth, Self::Error> {
+            Ok(russh::server::Auth::Accept)
+        }
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            _: russh::Channel<russh::server::Msg>,
+            host: &str,
+            _: u32,
+            _: &str,
+            _: u32,
+            _: &mut russh::server::Session,
+        ) -> Result<bool, Self::Error> {
+            Ok(host != "denied.example")
+        }
+        async fn data(
+            &mut self,
+            channel: russh::ChannelId,
+            data: &[u8],
+            session: &mut russh::server::Session,
+        ) -> Result<(), Self::Error> {
+            session.data(channel, data.to_vec())?;
+            Ok(())
+        }
+    }
+
+    async fn echo_through(port: u16) {
+        timeout(Duration::from_secs(5), async {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            stream.write_all(b"ping").await.unwrap();
+            let mut reply = [0; 4];
+            stream.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"ping");
+        })
+        .await
+        .expect("SSH forwarding should respond");
+    }
+
+    #[tokio::test]
+    async fn real_ssh_retry_reuses_session_and_failed_retry_preserves_active_forwarding() {
+        let server_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = server_socket.local_addr().unwrap().port();
+        // A deterministic key belongs only to this isolated loopback test server.
+        let key = ssh_key::PrivateKey::new(
+            ssh_key::private::KeypairData::Ed25519(ssh_key::private::Ed25519Keypair::from_seed(
+                &[7; 32],
+            )),
+            "test",
+        )
+        .unwrap();
+        let config = Arc::new(russh::server::Config {
+            keys: vec![key],
+            ..Default::default()
+        });
+        let accepts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accept_count = Arc::clone(&accepts);
+        let server = tokio::spawn(async move {
+            loop {
+                let (socket, _) = server_socket.accept().await.unwrap();
+                accept_count.fetch_add(1, Ordering::SeqCst);
+                let config = Arc::clone(&config);
+                tokio::spawn(async move {
+                    let _ = russh::server::run_stream(config, socket, EchoServer)
+                        .await
+                        .unwrap()
+                        .await;
+                });
+            }
+        });
+        let tunnel = TunnelConfig {
+            ssh: SshSettings {
+                host: "127.0.0.1".into(),
+                port: server_port,
+                username: "test".into(),
+                ..SshSettings::default()
+            },
+            ..TunnelConfig::default()
+        };
+        async fn bind(id: &str, domain: &str) -> (ServiceConfig, tokio::net::TcpListener) {
+            let listener =
+                crate::listener_diagnostics::bind_listener("127.0.0.1:0".parse().unwrap())
+                    .await
+                    .unwrap();
+            let service = ServiceConfig {
+                id: id.into(),
+                name: id.into(),
+                domain: domain.into(),
+                local_ip: "127.0.0.1".into(),
+                port: listener.local_addr().unwrap().port(),
+                ..service()
+            };
+            (service, listener)
+        }
+        let first = bind("first", "first.example").await;
+        let first_port = first.0.port;
+        let (mut runtime, issues) = start(tunnel.clone(), vec![first], Some("test".into()), None)
+            .await
+            .unwrap();
+        assert!(issues.is_empty());
+        echo_through(first_port).await;
+
+        let denied = bind("denied", "denied.example").await;
+        let denied_port = denied.0.port;
+        let (failed_retry, issues) = start(
+            tunnel.clone(),
+            vec![denied],
+            None,
+            Some(runtime.resources()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(failed_retry.services().is_empty());
+        failed_retry.stop().await;
+        assert!(tokio::net::TcpListener::bind(("127.0.0.1", denied_port))
+            .await
+            .is_ok());
+        echo_through(first_port).await;
+
+        let second = bind("second", "second.example").await;
+        let second_port = second.0.port;
+        let (retry, issues) = start(tunnel, vec![second], None, Some(runtime.resources()))
+            .await
+            .unwrap();
+        assert!(issues.is_empty());
+        runtime.absorb(retry);
+        echo_through(first_port).await;
+        echo_through(second_port).await;
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "retry should reuse the SSH session"
+        );
+        runtime.stop().await;
+        assert!(crate::listener_diagnostics::bind_listener(
+            format!("127.0.0.1:{first_port}").parse().unwrap()
+        )
+        .await
+        .is_ok());
+        assert!(crate::listener_diagnostics::bind_listener(
+            format!("127.0.0.1:{second_port}").parse().unwrap()
+        )
+        .await
+        .is_ok());
+        server.abort();
+    }
 
     fn service() -> ServiceConfig {
         ServiceConfig {

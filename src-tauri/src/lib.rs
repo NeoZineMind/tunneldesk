@@ -5,9 +5,11 @@ mod error;
 mod health;
 mod hosts;
 pub mod hosts_core;
+mod listener_diagnostics;
 mod model;
 #[cfg(target_os = "linux")]
 mod privileged_hosts;
+mod profile_start;
 mod profile_transfer;
 mod single_instance;
 mod startup;
@@ -45,37 +47,38 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
-            if settings.behavior.auto_repair_on_start {
-                std::thread::spawn(|| {
-                    let started = std::time::Instant::now();
-                    if !hosts::can_write_hosts() {
-                        tracing::info!(
-                            elapsed_ms = started.elapsed().as_millis(),
-                            "Startup hosts repair skipped; direct hosts access is unavailable"
-                        );
-                        return;
-                    }
-                    match hosts::remove_block_without_elevation() {
-                        Ok(true) => tracing::info!(
-                            elapsed_ms = started.elapsed().as_millis(),
-                            "Startup hosts repair removed TunnelDesk block"
-                        ),
-                        Ok(false) => tracing::info!(
-                            elapsed_ms = started.elapsed().as_millis(),
-                            "Startup hosts repair skipped; no TunnelDesk block"
-                        ),
-                        Err(error) => tracing::warn!(
-                            elapsed_ms = started.elapsed().as_millis(),
-                            "Failed to repair hosts on startup: {error}"
-                        ),
-                    }
-                });
-            }
-            if settings.behavior.auto_start_profile {
+            if settings.behavior.auto_repair_on_start || settings.behavior.auto_start_profile {
                 tauri::async_runtime::spawn(async move {
                     let state = startup_handle.state::<AppState>();
-                    if let Err(error) = commands::start_profile_for_state(state.inner()).await {
-                        tracing::error!("Failed to auto start profile: {error}");
+                    if settings.behavior.auto_repair_on_start {
+                        let _operation = state.operation.lock().await;
+                        let running = state
+                            .tunnels
+                            .lock()
+                            .map(|tunnels| !tunnels.is_empty())
+                            .unwrap_or(true);
+                        let result = if running {
+                            Ok(Ok(()))
+                        } else {
+                            tauri::async_runtime::spawn_blocking(|| {
+                                if hosts::can_write_hosts() {
+                                    hosts::remove_block_without_elevation().map(|_| ())
+                                } else {
+                                    Ok(())
+                                }
+                            })
+                            .await
+                        };
+                        if let Err(error) = result.unwrap_or_else(|error| {
+                            Err(error::AppError::Message(error.to_string()))
+                        }) {
+                            tracing::warn!("Startup hosts repair failed: {error}");
+                        }
+                    }
+                    if settings.behavior.auto_start_profile {
+                        if let Err(error) = commands::start_profile_for_state(state.inner()).await {
+                            tracing::error!("Failed to auto start profile: {error}");
+                        }
                     }
                 });
             }
@@ -99,6 +102,8 @@ pub fn run() {
             commands::has_tunnel_password,
             commands::test_ssh,
             commands::start_profile,
+            commands::check_profile_start,
+            commands::retry_skipped_services,
             commands::stop_profile,
             commands::get_status,
             commands::test_service,

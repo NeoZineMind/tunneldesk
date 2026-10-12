@@ -11,6 +11,8 @@ import type {
   ProfilesImportPreview,
   ServiceStatus,
   TunnelMapping,
+  StartMode,
+  StartupIssue,
 } from '@/shared/types'
 
 type InvokeArgs = Record<string, unknown>
@@ -59,7 +61,10 @@ async function devInvoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
       } as T
     case 'get_status':
     case 'start_profile':
+    case 'retry_skipped_services':
       return defaultStatus() as T
+    case 'check_profile_start':
+      return [] as T
     case 'stop_profile':
       return { ...defaultStatus(), running: false } as T
     case 'read_logs':
@@ -113,7 +118,9 @@ export const api = {
   deleteTunnelPassword: (tunnelId: string) => invokeCommand<void>('delete_tunnel_password', { tunnelId }),
   hasTunnelPassword: (tunnelId: string) => invokeCommand<boolean>('has_tunnel_password', { tunnelId }),
   testSsh: (tunnelId: string) => invokeCommand<void>('test_ssh', { tunnelId }),
-  startProfile: () => invokeCommand<AppStatus>('start_profile'),
+  checkProfileStart: () => invokeCommand<StartupIssue[]>('check_profile_start'),
+  startProfile: (mode?: StartMode) => invokeCommand<AppStatus>('start_profile', { mode }),
+  retrySkippedServices: () => invokeCommand<AppStatus>('retry_skipped_services'),
   stopProfile: () => invokeCommand<AppStatus>('stop_profile'),
   getStatus: () => invokeCommand<AppStatus>('get_status'),
   testService: (serviceId: string) => invokeCommand<ServiceStatus>('test_service', { serviceId }),

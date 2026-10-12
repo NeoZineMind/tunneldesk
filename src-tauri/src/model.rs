@@ -46,6 +46,14 @@ pub enum CloseAction {
     Exit,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StartMode {
+    #[default]
+    Strict,
+    Partial,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshSettings {
@@ -79,6 +87,8 @@ impl Default for SshSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BehaviorSettings {
+    #[serde(default)]
+    pub start_mode: StartMode,
     pub start_minimized: bool,
     #[serde(default)]
     pub auto_start_profile: bool,
@@ -95,6 +105,7 @@ pub struct BehaviorSettings {
 impl Default for BehaviorSettings {
     fn default() -> Self {
         Self {
+            start_mode: StartMode::Strict,
             start_minimized: false,
             auto_start_profile: false,
             launch_at_login: false,
@@ -232,6 +243,76 @@ pub enum ServiceState {
     Checking,
     Healthy,
     Error,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupIssueKind {
+    ListenerConflict,
+    PermissionDenied,
+    AddressUnavailable,
+    ListenerError,
+    DomainConflict,
+    SharedDomain,
+    SshError,
+    ForwardingError,
+    HostsError,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListenerOwner {
+    pub pid: u32,
+    pub process_name: Option<String>,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupIssue {
+    pub service_id: String,
+    pub service_name: String,
+    pub domain: String,
+    pub address: String,
+    pub kind: StartupIssueKind,
+    pub os_error: Option<i32>,
+    pub message: String,
+    pub owners: Vec<ListenerOwner>,
+}
+
+impl StartupIssue {
+    pub fn for_service(service: &ServiceConfig, kind: StartupIssueKind, message: String) -> Self {
+        Self {
+            service_id: service.id.clone(),
+            service_name: service.name.clone(),
+            domain: service.domain.clone(),
+            address: format!("{}:{}", service.local_ip, service.port),
+            kind,
+            os_error: None,
+            message,
+            owners: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupOutcome {
+    Complete,
+    Partial,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupReport {
+    pub profile_id: String,
+    pub mode: StartMode,
+    pub outcome: StartupOutcome,
+    pub started_service_ids: Vec<String>,
+    pub issues: Vec<StartupIssue>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +373,7 @@ impl Default for PrivilegeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStatus {
+    pub startup_report: Option<StartupReport>,
     pub running: bool,
     pub current_profile_id: String,
     pub running_tunnel_ids: Vec<String>,
@@ -317,6 +399,7 @@ pub struct LogEntry {
 impl Default for AppStatus {
     fn default() -> Self {
         Self {
+            startup_report: None,
             running: false,
             current_profile_id: String::from(DEFAULT_PROFILE_ID),
             running_tunnel_ids: Vec::new(),

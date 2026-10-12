@@ -64,7 +64,7 @@ pub fn remove_block_without_elevation() -> AppResult<bool> {
 }
 
 fn write_entries_block_direct(entries: &[HostsEntry]) -> AppResult<()> {
-    let content = fs::read_to_string(hosts_path()).unwrap_or_default();
+    let content = fs::read_to_string(hosts_path())?;
     let block = render_block(entries);
     let next = replace_block(&content, Some(&block));
     if next == content {
@@ -72,19 +72,21 @@ fn write_entries_block_direct(entries: &[HostsEntry]) -> AppResult<()> {
     }
 
     backup_hosts_content(&content)?;
-    fs::write(hosts_path(), next)?;
+    crate::hosts_core::write_content_with_rollback(&hosts_path(), &content, &next)
+        .map_err(AppError::Message)?;
     flush_dns();
     Ok(())
 }
 
 fn remove_block_direct() -> AppResult<bool> {
-    let content = fs::read_to_string(hosts_path()).unwrap_or_default();
+    let content = fs::read_to_string(hosts_path())?;
     let Some(next) = remove_block_if_present_content(&content) else {
         return Ok(false);
     };
 
     backup_hosts_content(&content)?;
-    fs::write(hosts_path(), next)?;
+    crate::hosts_core::write_content_with_rollback(&hosts_path(), &content, &next)
+        .map_err(AppError::Message)?;
     flush_dns();
     Ok(true)
 }
