@@ -8,19 +8,31 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::sync::Mutex;
 
 use crate::error::{AppError, AppResult};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::model::APP_NAME;
 
 pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
+    #[cfg(target_os = "windows")]
+    let _guard = WINDOWS_STARTUP_LOCK
+        .lock()
+        .map_err(|_| AppError::Message(String::from("Windows startup lock poisoned")))?;
     platform_set_launch_at_login(enabled)
 }
 
 pub fn launch_at_login_enabled() -> bool {
+    #[cfg(target_os = "windows")]
+    let Ok(_guard) = WINDOWS_STARTUP_LOCK.lock() else {
+        return false;
+    };
     platform_launch_at_login_enabled()
 }
 
+#[cfg(target_os = "windows")]
+static WINDOWS_STARTUP_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(target_os = "windows")]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(target_os = "macos")]
@@ -49,27 +61,49 @@ fn platform_launch_at_login_enabled() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    let expected = exe.to_string_lossy().to_string();
-    windows_registry_run_value()
-        .map(|value| value.contains(&expected))
-        .unwrap_or(false)
+    crate::windows_startup::enabled(&exe)
 }
 
 #[cfg(target_os = "windows")]
 fn enable_windows_launch_at_login() -> AppResult<()> {
     let exe = std::env::current_exe()?;
-    let value = format!("\"{}\"", exe.display());
-    let output = windows_registry_command()
-        .args(["add", RUN_KEY, "/v", APP_NAME, "/t", "REG_SZ", "/d"])
-        .arg(value)
-        .arg("/f")
-        .output()?;
-    ensure_windows_reg_success(output)
+    // Register successfully before removing the old startup entry. An elevated
+    // interactive task uses this user's session and never stores a password.
+    crate::windows_startup::set_enabled(true, &exe)?;
+    remove_legacy_windows_launch_at_login(&exe)
 }
 
 #[cfg(target_os = "windows")]
 fn disable_windows_launch_at_login() -> AppResult<()> {
-    if windows_registry_run_value().is_none() {
+    let exe = std::env::current_exe()?;
+    crate::windows_startup::set_enabled(false, &exe)?;
+    remove_legacy_windows_launch_at_login(&exe)
+}
+
+#[cfg(target_os = "windows")]
+pub fn migrate_windows_launch_at_login() -> AppResult<()> {
+    let _guard = WINDOWS_STARTUP_LOCK
+        .lock()
+        .map_err(|_| AppError::Message(String::from("Windows startup lock poisoned")))?;
+    let exe = std::env::current_exe()?;
+    if windows_registry_run_value().is_some_and(|value| legacy_run_entry_matches(&value, &exe)) {
+        enable_windows_launch_at_login()?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn legacy_run_entry_matches(value: &str, exe: &std::path::Path) -> bool {
+    let expected = exe.to_string_lossy();
+    value.trim().eq_ignore_ascii_case(&expected)
+        || value
+            .trim()
+            .eq_ignore_ascii_case(&format!("\"{expected}\""))
+}
+
+#[cfg(target_os = "windows")]
+fn remove_legacy_windows_launch_at_login(exe: &std::path::Path) -> AppResult<()> {
+    if !windows_registry_run_value().is_some_and(|value| legacy_run_entry_matches(&value, exe)) {
         return Ok(());
     }
     let output = windows_registry_command()
@@ -254,4 +288,30 @@ fn platform_set_launch_at_login(_enabled: bool) -> AppResult<()> {
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn platform_launch_at_login_enabled() -> bool {
     false
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn migration_only_matches_the_current_executable() {
+        let exe = std::path::Path::new(r"C:\Program Files\TunnelDesk\tunneldesk.exe");
+        assert!(legacy_run_entry_matches(
+            r#""C:\Program Files\TunnelDesk\tunneldesk.exe""#,
+            exe
+        ));
+        assert!(legacy_run_entry_matches(
+            r#""c:\program files\tunneldesk\tunneldesk.exe""#,
+            exe
+        ));
+        assert!(!legacy_run_entry_matches(
+            r#""C:\Program Files\TunnelDesk\tunneldesk.exe" --other"#,
+            exe
+        ));
+        assert!(!legacy_run_entry_matches(
+            r#""C:\other\tunneldesk.exe""#,
+            exe
+        ));
+    }
 }

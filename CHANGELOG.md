@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.22 - 2026-10-12
+
+- Made Windows release executables request administrator privileges through the system UAC dialog before starting.
+- Moved Windows launch-at-login registration to a per-user elevated scheduled task, with migration from the previous Run registry entry.
+
 ## v0.1.21 - 2026-10-12
 
 - Added strict and partial Profile startup modes, listener conflict details with best-effort process ownership, and a manual skip/recheck flow.

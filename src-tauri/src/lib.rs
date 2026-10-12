@@ -16,6 +16,8 @@ mod startup;
 mod state;
 mod tunnel;
 mod validation;
+#[cfg(target_os = "windows")]
+mod windows_startup;
 
 use state::AppState;
 #[cfg(not(all(target_os = "linux", target_arch = "x86")))]
@@ -40,6 +42,13 @@ pub fn run() {
             setup_tray(app)?;
             single_instance::start_wake_listener(app.handle().clone());
             let startup_handle = app.handle().clone();
+
+            #[cfg(target_os = "windows")]
+            tauri::async_runtime::spawn_blocking(|| {
+                if let Err(error) = startup::migrate_windows_launch_at_login() {
+                    tracing::warn!("Failed to migrate Windows launch at login: {error}");
+                }
+            });
 
             let settings = config::load_settings().unwrap_or_default();
             if settings.behavior.start_minimized {
