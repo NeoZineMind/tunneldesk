@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.21 - 2026-10-12
 
 - Added strict and partial Profile startup modes, listener conflict details with best-effort process ownership, and a manual skip/recheck flow.
 - Isolated service and tunnel startup failures, kept hosts mappings aligned with started domain groups, and retained startup reports across status refreshes.

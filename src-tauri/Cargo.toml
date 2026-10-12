@@ -1,6 +1,6 @@
 [package]
 name = "tunneldesk"
-version = "0.1.20"
+version = "0.1.21"
 description = "A desktop SSH tunnel manager for development services"
 authors = ["TunnelDesk contributors"]
 license = "MIT"
