@@ -31,6 +31,8 @@ TunnelDesk 不启用 TUN 模式，也不会修改 Clash、Mihomo、系统代理�
   - `launchAtLogin`：用户登录系统后自动打开 TunnelDesk。
   - `autoStartProfile`：TunnelDesk 启动后自动启动当前 Profile。
 - 后端校验隧道 id、服务 id、端口、回环地址、重复监听地址和缺失的隧道引用。
+- 启动容错：显示冲突监听地址及可查询到的占用进程，支持跳过冲突继续启动；设置中可选择严格模式或容错模式，旧配置默认严格模式。
+- 部分启动报告与定向重试：同域名服务按组处理，hosts 只映射已启动服务，重试时复用已有 SSH 会话。
 - CI 覆盖前端类型检查、前端生产构建、Rust 格式检查、Clippy 和 Rust 测试。
 - CI 打包覆盖 Windows x64/ARM64、Linux x64/x86 与 macOS x64/ARM64。
 

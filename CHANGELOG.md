@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added strict and partial Profile startup modes, listener conflict details with best-effort process ownership, and a manual skip/recheck flow.
+- Isolated service and tunnel startup failures, kept hosts mappings aligned with started domain groups, and retained startup reports across status refreshes.
+- Added incremental retries that reuse existing SSH sessions, serialized startup/stop/hosts repair, and restored hosts content after failed writes.
+- Added real TCP conflict, startup rollback, retry, SSH forwarding, and frontend regression coverage.
+
 ## v0.1.20 - 2026-09-10
 
 - Moved the active Profile into a global sidebar environment selector with runtime status and guarded switching.

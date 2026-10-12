@@ -34,6 +34,7 @@ Saved in `settings.json` inside that data directory:
     }
   ],
   "behavior": {
+    "startMode": "strict",
     "startMinimized": false,
     "autoStartProfile": false,
     "launchAtLogin": false,
@@ -45,6 +46,12 @@ Saved in `settings.json` inside that data directory:
 ```
 
 `themeMode` accepts `system`, `light`, or `dark`. `autoStartProfile` starts the current profile after the app opens. `launchAtLogin` mirrors the platform login startup entry. The password value itself is not saved here.
+
+`startMode` accepts `strict` (the default, including existing configurations) or `partial`. Strict startup requires every enabled listener, SSH connection, and forwarding preflight to succeed; otherwise newly acquired resources are released. Partial startup skips unavailable services and failed tunnels, and writes hosts entries only for the services that start. A failed service causes all services sharing its domain to be skipped because hosts mappings cannot distinguish ports. Services sharing a domain must use the same local IP.
+
+Manual startup lists listener conflicts with addresses and available process names/PIDs before changing hosts. Choosing to skip applies to that startup only and does not disable services in the saved Profile. Process lookup is best effort: Windows uses the TCP connection table through PowerShell, Linux uses `ss` with `lsof` fallback, and macOS uses `lsof`; restricted permissions, missing tools, or timeouts leave the process information unavailable.
+
+Overview and Diagnostics retain the startup report, including when all services fail. Retry skipped services reuses active SSH sessions and preserves existing listeners. If Profile or involved tunnel configuration changes, stop and start again instead. Auto-start uses the saved strategy and makes its report available when the main window is opened.
 
 ## Password Storage
 
