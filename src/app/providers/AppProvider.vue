@@ -4,6 +4,7 @@ import { setTheme } from '@tauri-apps/api/app'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import CloseRequestDialog from './CloseRequestDialog.vue'
 import StartupValidationDialog from './StartupValidationDialog.vue'
+import StartupConflictDialog from './StartupConflictDialog.vue'
 import ToastBridge from './ToastBridge.vue'
 import UnsavedProfilesDialog from './UnsavedProfilesDialog.vue'
 import { useAppStore } from '@/stores/appStore'
@@ -55,6 +56,7 @@ onBeforeUnmount(() => {
       <slot />
       <CloseRequestDialog />
       <StartupValidationDialog />
+      <StartupConflictDialog />
       <UnsavedProfilesDialog />
       <ToastBridge />
     </a-app>

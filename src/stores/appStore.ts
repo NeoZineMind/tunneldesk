@@ -8,7 +8,7 @@ import { normalizeProfiles, normalizeSettings, normalizeStatus } from '@/shared/
 import { validateProfileStart, type StartupValidationIssue } from '@/shared/domain/startupValidation'
 import { createTunnel, nextLocalIp, slugify, tunnelName as resolveTunnelName } from '@/shared/domain/tunnelFactory'
 import { findDuplicateListener } from '@/shared/domain/validators'
-import type { AppSettings, AppStatus, ConfigBackupInfo, ProfilesFile, ProfilesImportApplyResult, ProfilesImportSession, ServiceConfig, ServiceProfile, TunnelConfig, TunnelMapping } from '@/shared/types'
+import type { AppSettings, AppStatus, ConfigBackupInfo, ProfilesFile, ProfilesImportApplyResult, ProfilesImportSession, ServiceConfig, ServiceProfile, TunnelConfig, TunnelMapping, StartMode, StartupIssue } from '@/shared/types'
 import { usePasswordStore } from './passwordStore'
 
 type MessageType = 'success' | 'error' | 'info'
@@ -63,6 +63,8 @@ export const useAppStore = defineStore('app', () => {
   const pendingUnsavedProfilesAction = ref<(() => Promise<void>) | null>(null)
   const startupValidationIssues = ref<StartupValidationIssue[]>([])
   const startupValidationOpen = ref(false)
+  const startupConflictIssues = ref<StartupIssue[]>([])
+  const startupConflictOpen = ref(false)
   const configBackups = ref<ConfigBackupInfo[]>([])
 
   watch(operationBusy, (busy) => {
@@ -181,7 +183,7 @@ export const useAppStore = defineStore('app', () => {
     clearMessage()
     try {
       const result = await action()
-      setMessage('success', okMessage)
+      if (okMessage) setMessage('success', okMessage)
       return result
     } catch (error) {
       setMessage('error', commandErrorMessage(error))
@@ -743,7 +745,7 @@ export const useAppStore = defineStore('app', () => {
     await runAfterUnsavedProfilesConfirm(startSavedProfile)
   }
 
-  async function startSavedProfile() {
+  async function startSavedProfile(mode?: StartMode, skipCheck = false) {
     if (!allowServiceEdit()) return
     const issues = validateProfileStart(currentProfile.value, settings.value, status.value)
     if (issues.length) {
@@ -753,10 +755,38 @@ export const useAppStore = defineStore('app', () => {
       return
     }
     await withBusy(async () => {
-      const result = await api.startProfile()
-      statusRequestSequence += 1
-      status.value = normalizeStatus(result)
-    }, '隧道已启动')
+      if (!skipCheck) {
+        startupConflictIssues.value = await api.checkProfileStart()
+        if (startupConflictIssues.value.length) {
+          startupConflictOpen.value = true
+          return
+        }
+      }
+      startupConflictOpen.value = false
+      applyStartupResult(await api.startProfile(mode || settings.value.behavior.startMode))
+    }, '')
+  }
+
+  function applyStartupResult(result: AppStatus) {
+    statusRequestSequence += 1
+    status.value = normalizeStatus(result)
+    const report = status.value.startupReport
+    setMessage(report?.outcome === 'failed' ? 'error' : report?.outcome === 'partial' ? 'info' : 'success', report?.message || '隧道已启动')
+  }
+
+  async function continuePartialStart() {
+    if (!allowServiceEdit() || serviceEditorOpen.value) return
+    await runAfterUnsavedProfilesConfirm(() => startSavedProfile('partial', true))
+  }
+
+  async function recheckStartup() {
+    if (!allowServiceEdit() || serviceEditorOpen.value) return
+    await runAfterUnsavedProfilesConfirm(startSavedProfile)
+  }
+
+  async function retrySkippedServices() {
+    if (!status.value.running || serviceEditorOpen.value || profilesDirty.value) return
+    await withBusy(async () => applyStartupResult(await api.retrySkippedServices()), '')
   }
 
   function closeStartupValidation() {
@@ -991,6 +1021,11 @@ export const useAppStore = defineStore('app', () => {
     unsavedProfilesConfirmOpen,
     startupValidationIssues,
     startupValidationOpen,
+    startupConflictOpen,
+    startupConflictIssues,
+    continuePartialStart,
+    recheckStartup,
+    retrySkippedServices,
     configBackups,
     currentProfile,
     currentTunnel,

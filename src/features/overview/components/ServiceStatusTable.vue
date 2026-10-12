@@ -26,7 +26,7 @@ const columns: TableColumnsType<ServiceConfig> = [
   { title: '操作', key: 'actions', width: 94, fixed: 'right' },
 ]
 function statusFor(service: ServiceConfig) { return displayServiceStatus(service, store.status.running, store.status.services) }
-function hasError(service: ServiceConfig) { return store.status.running && service.enabled && ['error', 'stopped'].includes(statusFor(service).state) }
+function hasError(service: ServiceConfig) { return service.enabled && ['error', 'skipped'].includes(statusFor(service).state) }
 </script>
 
 <template>

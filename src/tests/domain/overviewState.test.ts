@@ -32,6 +32,16 @@ describe('overview state', () => {
     expect(buildOverviewSummary(profile, settings, status)).toMatchObject({ title: '已停止', description: '已启用 1 项服务', healthyServices: 0, abnormalServices: 0, tone: 'neutral' })
   })
 
+  it('reports partial startup and counts skipped services separately', () => {
+    const { profile, settings, status } = readyFixture()
+    status.running = true
+    status.runningTunnelIds = ['default']
+    status.hostsBlockPresent = true
+    status.services = [{ serviceId: 'mysql', state: 'skipped', message: 'Address occupied' }]
+    status.startupReport = { profileId: 'default', mode: 'partial', outcome: 'partial', startedServiceIds: ['other'], issues: [], message: 'Partial' }
+    expect(buildOverviewSummary(profile, settings, status)).toMatchObject({ title: '部分运行', description: '0/1 服务可达 · 1 项已跳过', abnormalServices: 1 })
+  })
+
   it('handles an empty profile without stale metrics', () => {
     const summary = buildOverviewSummary(defaultProfiles().profiles[0], defaultSettings(), defaultStatus())
     expect(summary.title).toBe('已停止')
