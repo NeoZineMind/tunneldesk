@@ -66,14 +66,14 @@ const hostsAccessColor = computed(() => (store.status.privilege.canModifyHosts ?
         </a-tag>
       </a-descriptions-item>
       <a-descriptions-item label="运行状态">
-        <a-tag :color="store.status.running ? 'success' : 'default'">{{ runningLabel(store.status.running) }}</a-tag>
+        <a-tag :color="store.status.startupReport?.outcome === 'partial' ? 'warning' : store.status.running ? 'success' : 'default'">{{ runningLabel(store.status.running, store.status.startupReport?.outcome) }}</a-tag>
       </a-descriptions-item>
       <a-descriptions-item label="运行隧道">
         {{ store.status.runningTunnelIds.map(store.tunnelName).join(', ') || '无' }}
       </a-descriptions-item>
     </a-descriptions>
     <div class="mt-4 flex justify-end">
-      <a-button :loading="store.loading" @click="store.repairHosts">
+      <a-button :loading="store.loading" :disabled="store.status.running" @click="store.repairHosts">
         <template #icon><ReloadOutlined /></template>
         修复 hosts
       </a-button>

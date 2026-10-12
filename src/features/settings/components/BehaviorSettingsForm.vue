@@ -78,6 +78,13 @@ onBeforeUnmount(() => {
       </div>
       <div class="settings-panel-body settings-panel-body-flush">
         <div class="settings-row">
+          <div><div class="settings-row-title">启动策略</div><div class="settings-row-description">严格模式要求全部成功；容错模式跳过失败服务。自动启动使用此策略。</div></div>
+          <a-select v-model:value="store.settings.behavior.startMode" :disabled="store.settingsControlsDisabled" aria-label="启动策略" style="width: 140px" @change="saveBehavior">
+            <a-select-option value="strict">严格模式</a-select-option>
+            <a-select-option value="partial">容错模式</a-select-option>
+          </a-select>
+        </div>
+        <div class="settings-row">
           <div><div class="settings-row-title">启动后最小化</div><div class="settings-row-description">打开应用后隐藏主窗口，仅保留托盘入口。</div></div>
           <a-switch v-model:checked="store.settings.behavior.startMinimized" :disabled="store.settingsControlsDisabled" aria-label="启动后最小化" @change="saveBehavior" />
         </div>

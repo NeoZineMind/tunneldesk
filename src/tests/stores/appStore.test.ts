@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { defaultProfiles, defaultSettings, defaultStatus, defaultServiceDraft } from '@/shared/domain/defaults'
 import { useAppStore } from '@/stores/appStore'
 import { flushPromises } from '@vue/test-utils'
-import type { AppSettings } from '@/shared/types'
+import type { AppSettings, StartupIssue } from '@/shared/types'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -30,6 +30,8 @@ const mockApi = vi.hoisted(() => ({
   hasTunnelPassword: vi.fn(),
   testSsh: vi.fn(),
   startProfile: vi.fn(),
+  checkProfileStart: vi.fn(),
+  retrySkippedServices: vi.fn(),
   stopProfile: vi.fn(),
   getStatus: vi.fn(),
   testService: vi.fn(),
@@ -74,6 +76,7 @@ describe('appStore', () => {
     mockApi.deleteTunnelPassword.mockResolvedValue(undefined)
     mockApi.testSsh.mockResolvedValue(undefined)
     mockApi.startProfile.mockResolvedValue({ ...defaultStatus(), running: true, runningTunnelIds: ['default'] })
+    mockApi.checkProfileStart.mockResolvedValue([])
     mockApi.stopProfile.mockResolvedValue({ ...defaultStatus(), running: false })
     mockApi.getStatus.mockResolvedValue(defaultStatus())
     mockApi.repairHosts.mockResolvedValue(undefined)
@@ -447,6 +450,10 @@ describe('appStore', () => {
     })
 
     await store.refresh()
+    store.currentTunnel.ssh.host = 'jump.example.com'
+    store.currentTunnel.ssh.username = 'dev'
+    store.addService(serviceDraft())
+    await store.saveProfiles()
 
     await store.start()
     expect(store.status.running).toBe(true)
@@ -454,6 +461,70 @@ describe('appStore', () => {
 
     await store.stop()
     expect(store.status.running).toBe(false)
+  })
+
+  it('lists conflicts before startup and allows a one-time partial override without changing configuration', async () => {
+    const store = await readyForStart()
+    const snapshot = JSON.stringify(store.currentProfile)
+    mockApi.checkProfileStart.mockResolvedValue([conflictIssue()])
+    await store.start()
+    expect(mockApi.startProfile).not.toHaveBeenCalled()
+    expect(store.startupConflictOpen).toBe(true)
+    expect(store.startupConflictIssues[0].owners[0].pid).toBe(42)
+    mockApi.startProfile.mockResolvedValue({ ...defaultStatus(), running: true, startupReport: {
+      profileId: 'default', mode: 'partial', outcome: 'partial', startedServiceIds: ['good'], issues: [conflictIssue()], message: '已启动 1 个服务，跳过 1 个服务',
+    } })
+    await store.continuePartialStart()
+    expect(mockApi.startProfile).toHaveBeenCalledWith('partial')
+    expect(mockApi.checkProfileStart).toHaveBeenCalledTimes(1)
+    expect(store.startupConflictOpen).toBe(false)
+    expect(store.settings.behavior.startMode).toBe('strict')
+    expect(JSON.stringify(store.currentProfile)).toBe(snapshot)
+    expect(store.messageType).toBe('info')
+  })
+
+  it('rechecks released conflicts and starts with the configured strict mode', async () => {
+    const store = await readyForStart()
+    mockApi.checkProfileStart.mockResolvedValueOnce([conflictIssue()]).mockResolvedValueOnce([])
+    await store.start()
+    await store.recheckStartup()
+    expect(mockApi.startProfile).toHaveBeenCalledWith('strict')
+    expect(store.startupConflictOpen).toBe(false)
+  })
+
+  it('preserves failed startup diagnostics through polling instead of reporting success', async () => {
+    const store = await readyForStart()
+    const failed = { ...defaultStatus(), services: [{ serviceId: 'mysql', state: 'error' as const, message: 'Address occupied' }], startupReport: {
+      profileId: 'default', mode: 'strict' as const, outcome: 'failed' as const, startedServiceIds: [], issues: [conflictIssue()], message: '启动失败，未启动任何服务',
+    } }
+    mockApi.startProfile.mockResolvedValue(failed)
+    await store.start()
+    expect(store.status.running).toBe(false)
+    expect(store.messageType).toBe('error')
+    mockApi.getStatus.mockResolvedValue(failed)
+    await store.refreshStatus()
+    expect(store.status.startupReport?.issues[0].address).toBe('127.77.0.10:3306')
+  })
+
+  it('retries skipped services while running without stopping existing tunnels', async () => {
+    const store = await readyForStart()
+    store.status.running = true
+    mockApi.retrySkippedServices.mockResolvedValue({ ...defaultStatus(), running: true, runningTunnelIds: ['default'], startupReport: {
+      profileId: 'default', mode: 'partial', outcome: 'complete', startedServiceIds: ['mysql'], issues: [], message: '已启动 1 个服务',
+    } })
+    await store.retrySkippedServices()
+    expect(mockApi.retrySkippedServices).toHaveBeenCalledOnce()
+    expect(mockApi.stopProfile).not.toHaveBeenCalled()
+    expect(store.status.startupReport?.outcome).toBe('complete')
+    expect(store.status.running).toBe(true)
+  })
+
+  it('protects unsaved Profile edits when retrying a failed startup in partial mode', async () => {
+    const store = await readyForStart()
+    store.updateService('mysql', { ...store.currentProfile.services[0], remark: 'draft' })
+    await store.continuePartialStart()
+    expect(store.unsavedProfilesConfirmOpen).toBe(true)
+    expect(mockApi.startProfile).not.toHaveBeenCalled()
   })
 
   it('saves tunnel passwords without exposing saved values', async () => {
@@ -864,4 +935,22 @@ function emptyImportPreview() {
 
 function serviceDraft() {
   return { ...defaultServiceDraft(), id: 'mysql', name: 'MySQL', domain: 'mysql.internal' }
+}
+
+function conflictIssue(): StartupIssue {
+  return { serviceId: 'mysql', serviceName: 'MySQL', domain: 'mysql.internal', address: '127.77.0.10:3306', kind: 'listenerConflict', osError: 10048, message: 'Address occupied', owners: [{ pid: 42, processName: 'mysqld', address: '0.0.0.0:3306' }] }
+}
+
+async function readyForStart() {
+  const settings = defaultSettings()
+  settings.tunnels[0].ssh.host = 'jump.example.com'
+  settings.tunnels[0].ssh.username = 'dev'
+  const profiles = defaultProfiles()
+  profiles.profiles[0].services.push(serviceDraft())
+  mockApi.loadSettings.mockResolvedValue(settings)
+  mockApi.loadProfiles.mockResolvedValue(profiles)
+  mockApi.getStatus.mockResolvedValue({ ...defaultStatus(), privilege: { ...defaultStatus().privilege, canModifyHosts: true } })
+  const store = useAppStore()
+  await store.refresh()
+  return store
 }

@@ -31,6 +31,8 @@ TunnelDesk does not enable TUN mode and does not change Clash, Mihomo, system pr
   - `launchAtLogin` opens TunnelDesk when the user logs in.
   - `autoStartProfile` starts the current profile after TunnelDesk launches.
 - Backend-side validation for tunnel ids, service ids, ports, loopback addresses, duplicated listeners, and missing tunnel references.
+- Startup conflict details with listener addresses and available process names/PIDs; skip unavailable services or require all services to start in strict mode.
+- Persistent partial-start reports and incremental retries that reuse SSH sessions and keep hosts mappings aligned with started domain groups.
 - CI checks for frontend type safety, production frontend build, Rust formatting, Clippy, and Rust tests.
 - CI packaging for Windows x64/ARM64, Linux x64/x86, and macOS x64/ARM64.
 

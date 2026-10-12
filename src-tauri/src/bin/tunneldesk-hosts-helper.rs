@@ -27,14 +27,18 @@ fn run() -> Result<(), String> {
     let request: HostsHelperRequest = serde_json::from_str(&payload)
         .map_err(|error| format!("Invalid helper request JSON: {error}"))?;
 
-    let content = fs::read_to_string(HOSTS_PATH).unwrap_or_default();
+    let content = fs::read_to_string(HOSTS_PATH)
+        .map_err(|error| format!("Failed to read {HOSTS_PATH}: {error}"))?;
     let Some(next) = apply_hosts_request(&content, &request)? else {
         return Ok(());
     };
 
     backup_hosts_content(&content)?;
-    fs::write(HOSTS_PATH, next)
-        .map_err(|error| format!("Failed to write {HOSTS_PATH}: {error}"))?;
+    tunneldesk_lib::hosts_core::write_content_with_rollback(
+        std::path::Path::new(HOSTS_PATH),
+        &content,
+        &next,
+    )?;
     flush_dns();
     Ok(())
 }

@@ -33,6 +33,7 @@ export function defaultSettings(): AppSettings {
     currentTunnelId: DEFAULT_TUNNEL_ID,
     tunnels: [defaultTunnel()],
     behavior: {
+      startMode: 'strict',
       startMinimized: false,
       autoStartProfile: false,
       launchAtLogin: false,
@@ -53,6 +54,7 @@ export function defaultProfiles(): ProfilesFile {
 
 export function defaultStatus(): AppStatus {
   return {
+    startupReport: null,
     running: false,
     currentProfileId: DEFAULT_PROFILE_ID,
     runningTunnelIds: [],

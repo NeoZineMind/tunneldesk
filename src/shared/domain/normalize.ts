@@ -28,6 +28,7 @@ export function normalizeSettings(value?: Partial<AppSettings> | null): AppSetti
       ...fallback.behavior,
       ...source.behavior,
       themeMode: source.behavior?.themeMode || 'system',
+      startMode: source.behavior?.startMode === 'partial' ? 'partial' : 'strict',
     },
   }
 }
@@ -72,5 +73,6 @@ export function normalizeStatus(value?: Partial<AppStatus> | null): AppStatus {
       ...value?.privilege,
     },
     services: value?.services || [],
+    startupReport: value?.startupReport || null,
   }
 }

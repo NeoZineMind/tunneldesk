@@ -13,6 +13,7 @@ import { useAppStore } from '@/stores/appStore'
 import { useUpdateStore } from '@/stores/updateStore'
 import ServiceStatusTable from './components/ServiceStatusTable.vue'
 import StatusHero from './components/StatusHero.vue'
+import StartupReportPanel from '@/shared/ui/StartupReportPanel.vue'
 
 const store = useAppStore()
 const updateStore = useUpdateStore()
@@ -65,6 +66,7 @@ const affectedTunnelCount = computed(() => store.status.runningTunnelIds.length)
   </PageHeader>
   <div class="grid gap-4">
     <StatusHero />
+    <StartupReportPanel />
     <ServiceStatusTable />
   </div>
 </template>

@@ -152,136 +152,187 @@ pub async fn test_ssh(tunnel_id: String) -> CommandResult<()> {
 }
 
 #[tauri::command]
-pub async fn start_profile(state: State<'_, AppState>) -> CommandResult<AppStatus> {
-    let started = std::time::Instant::now();
-    match start_profile_for_state(state.inner()).await {
-        Ok(status) => Ok(status),
-        Err(error) => {
-            tracing::error!(
-                elapsed_ms = started.elapsed().as_millis(),
-                error = %error,
-                "Failed to start profile"
-            );
-            Err(error)
-        }
+pub async fn check_profile_start(
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<crate::model::StartupIssue>> {
+    let _operation = state.operation.lock().await;
+    if !state
+        .tunnels
+        .lock()
+        .map_err(|_| "Tunnel state lock is poisoned")?
+        .is_empty()
+    {
+        return Err(String::from("Profile is already running"));
     }
-}
-
-pub async fn start_profile_for_state(state: &AppState) -> CommandResult<AppStatus> {
-    let started = std::time::Instant::now();
-    let already_running = {
-        let guard = state
-            .tunnels
-            .lock()
-            .map_err(|_| String::from("Tunnel state lock is poisoned"))?;
-        !guard.is_empty()
-    };
-    if already_running {
-        return get_status_for_state(state);
-    }
-
     let settings = config::load_settings().map_err(to_command_error)?;
     let profiles = config::load_profiles().map_err(to_command_error)?;
     validation::validate_settings_with_profiles(&settings, &profiles).map_err(to_command_error)?;
     let profile = current_profile(&settings, &profiles).map_err(to_command_error)?;
-    let enabled_services = profile
+    let services = profile
         .services
-        .iter()
+        .into_iter()
         .filter(|service| service.enabled)
-        .cloned()
         .collect::<Vec<_>>();
-    tracing::info!(
-        service_count = enabled_services.len(),
-        elapsed_ms = started.elapsed().as_millis(),
-        "Start profile config loaded"
-    );
-
-    let hosts_started = std::time::Instant::now();
-    hosts::write_services_block(&enabled_services).map_err(to_command_error)?;
-    tracing::info!(
-        service_count = enabled_services.len(),
-        elapsed_ms = hosts_started.elapsed().as_millis(),
-        total_elapsed_ms = started.elapsed().as_millis(),
-        "Start profile hosts updated"
-    );
-    let services_by_tunnel = group_services_by_tunnel(enabled_services);
-    let tunnels_by_id = settings
-        .tunnels
-        .iter()
-        .cloned()
-        .map(|tunnel| (tunnel.id.clone(), tunnel))
-        .collect::<HashMap<_, _>>();
-    let mut start_plan = Vec::new();
-
-    for (tunnel_id, services) in services_by_tunnel {
-        let tunnel_config = tunnels_by_id
-            .get(&tunnel_id)
-            .cloned()
-            .ok_or_else(|| format!("Tunnel not found: {tunnel_id}"))?;
-        if !tunnel_config.enabled {
-            let _ = hosts::remove_block();
-            return Err(format!("Tunnel is disabled: {}", tunnel_config.name));
-        }
-        if let Err(error) = validation::validate_tunnel_for_connection(&tunnel_config) {
-            let _ = hosts::remove_block();
-            return Err(to_command_error(error));
-        }
-        let password = password_for_tunnel(&tunnel_config).map_err(|error| {
-            let _ = hosts::remove_block();
-            to_command_error(error)
-        })?;
-        start_plan.push((tunnel_config, services, password));
-    }
-
-    let mut runtimes = HashMap::new();
-
-    for (tunnel_config, services, password) in start_plan {
-        let tunnel_started = std::time::Instant::now();
-        match tunnel::start(tunnel_config, services, password).await {
-            Ok(runtime) => {
-                let tunnel_id = runtime.tunnel_id().to_string();
-                tracing::info!(
-                    tunnel_id = %tunnel_id,
-                    elapsed_ms = tunnel_started.elapsed().as_millis(),
-                    total_elapsed_ms = started.elapsed().as_millis(),
-                    "Tunnel runtime started"
-                );
-                runtimes.insert(tunnel_id, runtime);
-            }
-            Err(error) => {
-                for (_, runtime) in runtimes {
-                    runtime.stop().await;
-                }
-                let _ = hosts::remove_block();
-                return Err(to_command_error(error));
-            }
-        }
-    }
-
-    let mut guard = state
-        .tunnels
-        .lock()
-        .map_err(|_| String::from("Tunnel state lock is poisoned"))?;
-    *guard = runtimes;
-    drop(guard);
-
-    let mut active_profile = state
-        .active_profile_id
-        .lock()
-        .map_err(|_| String::from("Active profile state lock is poisoned"))?;
-    *active_profile = Some(profile.id.clone());
-    drop(active_profile);
-
-    let status = get_status_for_state(state)?;
-    tracing::info!(
-        elapsed_ms = started.elapsed().as_millis(),
-        "Start profile completed"
-    );
-    Ok(status)
+    let (listeners, issues) = crate::listener_diagnostics::prepare_listeners(&services).await;
+    drop(listeners);
+    Ok(issues)
 }
 
 #[tauri::command]
+pub async fn start_profile(
+    state: State<'_, AppState>,
+    mode: Option<crate::model::StartMode>,
+) -> CommandResult<AppStatus> {
+    start_profile_with_mode(state.inner(), mode, false).await
+}
+
+pub async fn start_profile_for_state(state: &AppState) -> CommandResult<AppStatus> {
+    start_profile_with_mode(state, None, false).await
+}
+
+#[tauri::command]
+pub async fn retry_skipped_services(state: State<'_, AppState>) -> CommandResult<AppStatus> {
+    start_profile_with_mode(state.inner(), Some(crate::model::StartMode::Partial), true).await
+}
+
+async fn start_profile_with_mode(
+    state: &AppState,
+    mode: Option<crate::model::StartMode>,
+    retry: bool,
+) -> CommandResult<AppStatus> {
+    let _operation = state.operation.lock().await;
+    let settings = config::load_settings().map_err(to_command_error)?;
+    let profiles = config::load_profiles().map_err(to_command_error)?;
+    validation::validate_settings_with_profiles(&settings, &profiles).map_err(to_command_error)?;
+    let profile = current_profile(&settings, &profiles).map_err(to_command_error)?;
+    let mode = mode.unwrap_or(settings.behavior.start_mode);
+    let (existing_services, resources) = {
+        let guard = state
+            .tunnels
+            .lock()
+            .map_err(|_| "Tunnel state lock is poisoned")?;
+        if !guard.is_empty() && !retry {
+            drop(guard);
+            return get_status_for_state(state);
+        }
+        if retry {
+            let snapshot = state
+                .startup_profile
+                .lock()
+                .map_err(|_| "Startup profile state lock is poisoned")?;
+            if snapshot.as_ref().is_none_or(|saved| {
+                serde_json::to_value(saved).ok() != serde_json::to_value(&profile).ok()
+            }) {
+                return Err(String::from("Profile 配置已改变，请停止后重新启动"));
+            }
+            let saved_tunnels = state
+                .startup_tunnels
+                .lock()
+                .map_err(|_| "Startup tunnel state lock is poisoned")?;
+            for saved in saved_tunnels.iter() {
+                if settings
+                    .tunnels
+                    .iter()
+                    .find(|tunnel| tunnel.id == saved.id)
+                    .is_none_or(|tunnel| {
+                        serde_json::to_value(tunnel).ok() != serde_json::to_value(saved).ok()
+                    })
+                {
+                    return Err(String::from("隧道配置已改变，请停止后重新启动"));
+                }
+            }
+        }
+        let services = guard
+            .values()
+            .flat_map(|runtime| runtime.services().iter().cloned())
+            .collect::<Vec<_>>();
+        let resources = guard
+            .iter()
+            .map(|(id, runtime)| (id.clone(), runtime.resources()))
+            .collect::<HashMap<_, _>>();
+        (services, resources)
+    };
+    let active_ids = existing_services
+        .iter()
+        .map(|service| service.id.as_str())
+        .collect::<HashSet<_>>();
+    let candidates = profile
+        .services
+        .iter()
+        .filter(|service| service.enabled && !active_ids.contains(service.id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if candidates.is_empty() && existing_services.is_empty() {
+        return Err(String::from("No enabled services in profile"));
+    }
+    let execution = crate::profile_start::start(
+        &settings,
+        &profile.id,
+        &candidates,
+        &existing_services,
+        resources,
+        mode,
+    )
+    .await;
+    match execution.report.outcome {
+        crate::model::StartupOutcome::Failed => {
+            tracing::error!(message = %execution.report.message, "Profile startup failed")
+        }
+        crate::model::StartupOutcome::Partial => tracing::warn!(
+            started = execution.report.started_service_ids.len(),
+            skipped = execution.report.issues.len(),
+            "Profile partially started"
+        ),
+        crate::model::StartupOutcome::Complete => tracing::info!(
+            started = execution.report.started_service_ids.len(),
+            "Profile startup completed"
+        ),
+    }
+    {
+        let mut guard = state
+            .tunnels
+            .lock()
+            .map_err(|_| "Tunnel state lock is poisoned")?;
+        for (id, runtime) in execution.runtimes {
+            if let Some(existing) = guard.get_mut(&id) {
+                existing.absorb(runtime);
+            } else {
+                guard.insert(id, runtime);
+            }
+        }
+        *state
+            .active_profile_id
+            .lock()
+            .map_err(|_| "Active profile state lock is poisoned")? =
+            (!guard.is_empty()).then(|| profile.id.clone());
+    }
+    *state
+        .startup_tunnels
+        .lock()
+        .map_err(|_| "Startup tunnel state lock is poisoned")? = settings
+        .tunnels
+        .iter()
+        .filter(|tunnel| {
+            profile
+                .services
+                .iter()
+                .any(|service| service.enabled && service.tunnel_id == tunnel.id)
+        })
+        .cloned()
+        .collect();
+    *state
+        .startup_profile
+        .lock()
+        .map_err(|_| "Startup profile state lock is poisoned")? = Some(profile);
+    *state
+        .startup_report
+        .lock()
+        .map_err(|_| "Startup report state lock is poisoned")? = Some(execution.report);
+    get_status_for_state(state)
+}
+#[tauri::command]
 pub async fn stop_profile(state: State<'_, AppState>) -> CommandResult<AppStatus> {
+    let _operation = state.operation.lock().await;
     let runtimes = {
         let mut guard = state
             .tunnels
@@ -299,6 +350,14 @@ pub async fn stop_profile(state: State<'_, AppState>) -> CommandResult<AppStatus
         .map_err(|_| String::from("Active profile state lock is poisoned"))?;
     *active_profile = None;
     drop(active_profile);
+    *state
+        .startup_report
+        .lock()
+        .map_err(|_| "Startup report state lock is poisoned")? = None;
+    *state
+        .startup_profile
+        .lock()
+        .map_err(|_| "Startup profile state lock is poisoned")? = None;
 
     hosts::remove_block().map_err(to_command_error)?;
     get_status_for_state(state.inner())
@@ -336,7 +395,13 @@ pub fn get_status_for_state(state: &AppState) -> CommandResult<AppStatus> {
         .ok()
         .and_then(|guard| guard.clone());
     let current_profile_id = active_profile.unwrap_or_else(|| settings.current_profile_id.clone());
-    let services = profiles
+    let startup_report = state
+        .startup_report
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|report| report.profile_id == current_profile_id);
+    let mut services = profiles
         .profiles
         .iter()
         .find(|profile| profile.id == current_profile_id)
@@ -348,6 +413,21 @@ pub fn get_status_for_state(state: &AppState) -> CommandResult<AppStatus> {
             )
         })
         .unwrap_or_default();
+    if let Some(report) = &startup_report {
+        for issue in &report.issues {
+            if let Some(status) = services
+                .iter_mut()
+                .find(|status| status.service_id == issue.service_id)
+            {
+                status.state = if running {
+                    ServiceState::Skipped
+                } else {
+                    ServiceState::Error
+                };
+                status.message = issue.message.clone();
+            }
+        }
+    }
     let tunnel_statuses = settings
         .tunnels
         .iter()
@@ -367,6 +447,7 @@ pub fn get_status_for_state(state: &AppState) -> CommandResult<AppStatus> {
 
     let privilege = health::privilege_status();
     let status = AppStatus {
+        startup_report,
         running,
         current_profile_id,
         running_tunnel_ids,
@@ -428,14 +509,42 @@ fn service_statuses_for_profile(
 }
 
 #[tauri::command]
-pub fn test_service(service_id: String) -> CommandResult<ServiceStatus> {
+pub fn test_service(
+    state: State<'_, AppState>,
+    service_id: String,
+) -> CommandResult<ServiceStatus> {
+    let status = get_status_for_state(state.inner())?;
+    let managed_status = status
+        .services
+        .iter()
+        .find(|service| service.service_id == service_id);
+    if let Some(service) = managed_status {
+        if !matches!(service.state, ServiceState::Healthy) {
+            return Ok(service.clone());
+        }
+    }
     let profiles = config::load_profiles().map_err(to_command_error)?;
-    for profile in profiles.profiles {
+    for profile in profiles
+        .profiles
+        .into_iter()
+        .filter(|profile| profile.id == status.current_profile_id)
+    {
         if let Some(service) = profile
             .services
             .into_iter()
             .find(|service| service.id == service_id)
         {
+            if managed_status.is_none() {
+                return Ok(ServiceStatus {
+                    service_id,
+                    state: if service.enabled {
+                        ServiceState::Stopped
+                    } else {
+                        ServiceState::Disabled
+                    },
+                    message: String::from("Service runtime is not running"),
+                });
+            }
             return Ok(health::service_status(&service));
         }
     }
@@ -443,7 +552,16 @@ pub fn test_service(service_id: String) -> CommandResult<ServiceStatus> {
 }
 
 #[tauri::command]
-pub fn repair_hosts() -> CommandResult<()> {
+pub async fn repair_hosts(state: State<'_, AppState>) -> CommandResult<()> {
+    let _operation = state.operation.lock().await;
+    if !state
+        .tunnels
+        .lock()
+        .map_err(|_| "Tunnel state lock is poisoned")?
+        .is_empty()
+    {
+        return Err(String::from("请先停止 Profile 再修复 hosts"));
+    }
     hosts::remove_block().map_err(to_command_error)
 }
 
@@ -633,17 +751,6 @@ fn tunnel_by_id(settings: &AppSettings, tunnel_id: &str) -> Result<TunnelConfig,
         .find(|tunnel| tunnel.id == tunnel_id)
         .cloned()
         .ok_or_else(|| AppError::Message(format!("Tunnel not found: {tunnel_id}")))
-}
-
-fn group_services_by_tunnel(services: Vec<ServiceConfig>) -> HashMap<String, Vec<ServiceConfig>> {
-    let mut grouped = HashMap::new();
-    for service in services {
-        grouped
-            .entry(service.tunnel_id.clone())
-            .or_insert_with(Vec::new)
-            .push(service);
-    }
-    grouped
 }
 
 fn password_for_tunnel(tunnel: &TunnelConfig) -> Result<Option<String>, AppError> {

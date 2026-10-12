@@ -1,10 +1,42 @@
+use std::io::{Seek, SeekFrom, Write};
 use std::net::IpAddr;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 pub const BEGIN_MARKER: &str = "# BEGIN TUNNELDESK";
 pub const END_MARKER: &str = "# END TUNNELDESK";
 pub const HOSTS_HELPER_REQUEST_VERSION: u32 = 1;
+
+// Keep the hosts file's identity and permissions (it may be a bind mount), and
+// restore its previous content if a write fails after changing some bytes.
+pub fn write_content_with_rollback(path: &Path, original: &str, next: &str) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("Failed to open hosts file for writing: {error}"))?;
+    fn write(file: &mut std::fs::File, content: &str) -> std::io::Result<()> {
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(content.as_bytes())?;
+        file.set_len(content.len() as u64)?;
+        file.sync_all()
+    }
+    write_with_rollback(original, next, |content| write(&mut file, content))
+}
+
+fn write_with_rollback(
+    original: &str,
+    next: &str,
+    mut write: impl FnMut(&str) -> std::io::Result<()>,
+) -> Result<(), String> {
+    if let Err(error) = write(next) {
+        return Err(match write(original) {
+            Ok(()) => format!("Failed to write hosts file; previous content restored: {error}"),
+            Err(rollback) => format!("Failed to write hosts file: {error}; restoring previous content also failed: {rollback}"),
+        });
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -165,6 +197,59 @@ pub(crate) fn validate_domain(value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_shorter_hosts_content_without_trailing_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hosts");
+        std::fs::write(&path, "before\nold long content\nafter\n").unwrap();
+        write_content_with_rollback(
+            &path,
+            "before\nold long content\nafter\n",
+            "before\nafter\n",
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "before\nafter\n");
+    }
+
+    #[test]
+    fn missing_hosts_file_is_not_created_or_replaced_with_empty_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing-hosts");
+        assert!(write_content_with_rollback(&path, "original", "new").is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn partial_write_failure_restores_previous_hosts_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hosts");
+        let original = "127.0.0.1 localhost\n# existing mapping\n";
+        std::fs::write(&path, original).unwrap();
+        let mut first_write = true;
+        let error = write_with_rollback(original, "new mapping", |content| {
+            if first_write {
+                first_write = false;
+                std::fs::write(&path, &content[..3])?;
+                Err(std::io::Error::other("injected partial write failure"))
+            } else {
+                std::fs::write(&path, content)
+            }
+        })
+        .unwrap_err();
+        assert!(error.contains("previous content restored"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn rollback_failure_is_reported_alongside_the_write_failure() {
+        let error = write_with_rollback("old", "new", |content| {
+            Err(std::io::Error::other(format!("cannot write {content}")))
+        })
+        .unwrap_err();
+        assert!(error.contains("cannot write new"));
+        assert!(error.contains("cannot write old"));
+    }
 
     fn entry(domain: &str, local_ip: &str) -> HostsEntry {
         HostsEntry {

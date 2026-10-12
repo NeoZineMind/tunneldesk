@@ -3,6 +3,10 @@ import { defaultProfiles, defaultServiceDraft, defaultSettings, defaultStatus } 
 import { validateProfileStart } from '@/shared/domain/startupValidation'
 
 describe('startup validation', () => {
+  it('requires at least one enabled service before checking ports or starting', () => {
+    const issues = validateProfileStart(defaultProfiles().profiles[0], defaultSettings(), defaultStatus())
+    expect(issues).toContainEqual({ id: 'no-enabled-services', message: '请至少启用一个服务后再启动' })
+  })
   it('rejects a service domain with a trailing quote', () => {
     const settings = defaultSettings()
     settings.tunnels[0].ssh.host = 'ssh.example.com'

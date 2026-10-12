@@ -13,6 +13,9 @@ export function validateProfileStart(
 ): StartupValidationIssue[] {
   const issues: StartupValidationIssue[] = []
   const enabledServices = profile.services.filter((service) => service.enabled)
+  if (!enabledServices.length) {
+    issues.push({ id: 'no-enabled-services', message: '请至少启用一个服务后再启动' })
+  }
   const tunnelsById = new Map(settings.tunnels.map((tunnel) => [tunnel.id, tunnel]))
 
   for (const service of enabledServices) {

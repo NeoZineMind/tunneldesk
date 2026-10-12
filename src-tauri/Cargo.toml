@@ -1,6 +1,6 @@
 [package]
 name = "tunneldesk"
-version = "0.1.20"
+version = "0.1.21"
 description = "A desktop SSH tunnel manager for development services"
 authors = ["TunnelDesk contributors"]
 license = "MIT"
@@ -40,3 +40,6 @@ tauri = { version = "2", features = ["tray-icon"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }

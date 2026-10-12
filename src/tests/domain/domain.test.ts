@@ -35,6 +35,7 @@ describe('domain defaults and normalization', () => {
     expect(settings.currentProfileId).toBe('default')
     expect(settings.currentTunnelId).toBe('jump')
     expect(settings.behavior.cleanupOnExit).toBe(true)
+    expect(settings.behavior.startMode).toBe('strict')
   })
 
   it('normalizes profiles with fallback tunnel ids', () => {
