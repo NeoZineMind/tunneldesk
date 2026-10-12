@@ -53,7 +53,9 @@ TunnelDesk 不启用 TUN 模式，也不会修改 Clash、Mihomo、系统代理�
 - Linux：`/etc/hosts`
 - macOS：`/etc/hosts`
 
-普通配置编辑不需要管理员权限。Debian/Ubuntu 上推荐安装 `.deb` 包：主程序以普通用户运行，启动、停止或修复 hosts 映射时，通过 polkit 弹出系统授权，只让最小权限 helper 修改 `/etc/hosts`。
+Windows 发布版在打开应用前通过系统 UAC 请求管理员权限；同意后才启动 TunnelDesk，取消则不启动。启用“开机启动”时，会为当前用户配置以管理员权限运行的交互式登录计划任务。升级后首次手动打开应用时，会迁移旧的注册表启动项。开发构建保留默认权限级别。
+
+Linux 和 macOS 上的普通配置编辑不需要管理员权限。Debian/Ubuntu 上推荐安装 `.deb` 包：主程序以普通用户运行，启动、停止或修复 hosts 映射时，通过 polkit 弹出系统授权，只让最小权限 helper 修改 `/etc/hosts`。
 
 ### Ubuntu 使用方式
 

@@ -53,7 +53,9 @@ Hosts file changes require elevated privileges:
 - Linux: `/etc/hosts`
 - macOS: `/etc/hosts`
 
-Normal configuration editing does not require elevation. On Debian/Ubuntu, the recommended `.deb` package keeps the GUI running as the normal user and uses polkit to authorize a small helper only when TunnelDesk needs to update `/etc/hosts`.
+Windows release executables request administrator privileges before opening through the system UAC dialog. Approve the request to let TunnelDesk manage hosts; cancelling leaves the application closed. Windows launch at login uses an elevated interactive scheduled task for the current user, configured when you enable the option. Existing Run registry entries are migrated after you first open the upgraded app. Development builds keep the default permission level.
+
+On Linux and macOS, normal configuration editing does not require elevation. On Debian/Ubuntu, the recommended `.deb` package keeps the GUI running as the normal user and uses polkit to authorize a small helper only when TunnelDesk needs to update `/etc/hosts`.
 
 ### Ubuntu Usage
 
